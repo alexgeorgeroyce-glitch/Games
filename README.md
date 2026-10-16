@@ -65,3 +65,15 @@ Credits, researched vessels, your equipped ship, and the service record persist 
 - `tests/` — simulation and browser integration checks.
 
 The artwork, fictional fleet, ocean shader, and game interface are original. This is an arcade naval combat prototype inspired by the genre, with single-player AI battles; it does not include multiplayer or a detailed armor-penetration simulation.
+
+## Play from a public web address
+
+This cloud workspace is separate from your own computer. A `/workspace/` path or the cloud server's localhost address is not a public game link.
+
+To publish the game using this repository's GitHub Pages hosting:
+
+1. In the GitHub repository, open **Settings → Pages** and select **GitHub Actions** as the build source.
+2. Open **Actions → Publish IRON TIDE → Run workflow**. Select the `feat/iron-tide-naval-combat` branch and run it.
+3. When the workflow succeeds, open the website URL shown in its deployment result.
+
+The workflow installs locked dependencies, runs the combat tests, builds assets under the repository's Pages path, and publishes `dist/`. Publication requires the repository's Pages settings to allow it. The workflow is manual and does not publish when code is pushed.
