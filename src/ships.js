@@ -15,12 +15,12 @@ function mesh(group, geometry, material, x = 0, y = 0, z = 0) {
   const object = new THREE.Mesh(geometry, material); object.position.set(x, y, z); group.add(object); return object;
 }
 function box(group, w, h, d, x, y, z, material = steel, radius = 0) {
-  return mesh(group, radius ? new RoundedBoxGeometry(w, h, d, 3, Math.min(radius, w / 2, h / 2, d / 2)) : new THREE.BoxGeometry(w, h, d), material, x, y, z);
+  return mesh(group, radius ? new RoundedBoxGeometry(w, h, d, 5, Math.min(radius, w / 2, h / 2, d / 2)) : new THREE.BoxGeometry(w, h, d), material, x, y, z);
 }
-function cylinder(group, r1, r2, h, x, y, z, material = steel, segments = 32) {
+function cylinder(group, r1, r2, h, x, y, z, material = steel, segments = 48) {
   return mesh(group, new THREE.CylinderGeometry(r1, r2, h, segments), material, x, y, z);
 }
-function pipe(group, points, radius = .08, material = steel, segments = 32, sides = 8) {
+function pipe(group, points, radius = .08, material = steel, segments = 48, sides = 12) {
   const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
   return mesh(group, new THREE.TubeGeometry(curve, segments, radius, sides, false), material);
 }
@@ -91,27 +91,40 @@ export function batchFittings(group) {
   return group;
 }
 
-function makeTurret(beam, length, barrels, paint) {
+function makeTurret(mount, paint) {
   const group = new THREE.Group();
-  cylinder(group, beam * .225, beam * .25, 1.7, 0, .8, 0, charcoal, 48);
-  cylinder(group, beam * .235, beam * .235, .25, 0, 1.8, 0, steel, 48);
-  box(group, beam * .53, 3.3, beam * .55, 0, 3.4, 0, paint, .65);
-  box(group, beam * .32, .2, beam * .36, 0, 5.1, 0, pale, .08);
-  for (let j = 0; j < barrels; j++) {
-    const x = (j - (barrels - 1) / 2) * (beam > 20 ? 1.85 : 1.25);
-    const barrel = cylinder(group, .24, .43, length * .16, x, 3.3, length * .105, charcoal);
+  const { width: w, depth: d, count, barrelLength: length, barrelRadius: radius } = mount;
+  cylinder(group, w * .46, w * .49, 1.7, 0, .8, 0, charcoal, 64);
+  cylinder(group, w * .47, w * .47, .25, 0, 1.8, 0, steel, 64);
+  box(group, w, 3.3, d, 0, 3.4, 0, paint, .65);
+  box(group, w * .62, .2, d * .62, 0, 5.14, -.1, pale, .08);
+  // Raised rangefinder, armor seams, access hatch, and side sighting apertures.
+  box(group, w * .86, .5, .6, 0, 5.45, -.7, charcoal, .18);
+  cylinder(group, .65, .65, .14, 0, 5.32, -d * .25, paint, 48);
+  for (let j = 0; j < count; j++) {
+    const x = (j - (count - 1) / 2) * mount.spacing;
+    const start = d * .3;
+    const barrel = cylinder(group, radius * .82, radius * 1.25, length, x, mount.bore, start + length / 2, charcoal, 64);
     barrel.rotation.x = Math.PI / 2;
-    const sleeve = cylinder(group, .49, .56, length * .045, x, 3.3, length * .045, paint);
+    const sleeve = cylinder(group, radius * 1.4, radius * 1.65, length * .26, x, mount.bore, start + length * .11, paint, 64);
     sleeve.rotation.x = Math.PI / 2;
-    const muzzle = mesh(group, new THREE.TorusGeometry(.27, .08, 8, 24), steel, x, 3.3, length * .185);
-    muzzle.rotation.x = 0;
-    mesh(group, new THREE.CircleGeometry(.23, 24), charcoal, x, 3.3, length * .185 + .01);
+    const muzzle = mesh(group, new THREE.TorusGeometry(radius * .88, radius * .16, 12, 48), steel, x, mount.bore, mount.muzzleOffset);
+    mesh(group, new THREE.CircleGeometry(radius * .7, 48), charcoal, x, mount.bore, mount.muzzleOffset + .01);
+    for (let ring = 0; ring < 3; ring++) {
+      mesh(group, new THREE.TorusGeometry(radius * (1.13 - ring * .08), .055, 8, 40), steel, x, mount.bore, start + length * (.35 + ring * .18));
+    }
   }
   for (const side of [-1, 1]) {
-    box(group, .45, .8, beam * .2, side * beam * .28, 3.3, -.3, charcoal, .15);
-    for (let i = 0; i < 3; i++) box(group, .05, .13, beam * .12, side * beam * .285, 3 + i * .3, -.3, steel);
+    box(group, .3, .8, d * .2, side * (w / 2 + .12), 3.3, -.3, charcoal, .1);
+    for (let i = 0; i < 3; i++) box(group, .05, .13, d * .12, side * (w / 2 + .28), 3 + i * .3, -.3, steel);
+    for (let i = 0; i < 6; i++) {
+      const rivet = mesh(group, new THREE.SphereGeometry(.075, 12, 8), steel, side * (w / 2 + .025), 2.5, -d * .36 + i * d * .14);
+      rivet.scale.x = .35;
+    }
   }
-  return batchFittings(group);
+  const turret = batchFittings(group);
+  turret.userData.mount = mount;
+  return turret;
 }
 
 function makeLifeboat(group, x, y, z, side) {
@@ -136,19 +149,19 @@ function makeAA(group, x, y, z, side) {
 
 export function makeShip(type) {
   const stats = SHIPS.find(ship => ship.id === type) || SHIPS[0];
-  const ship = new THREE.Group(), fittings = new THREE.Group(); ship.add(fittings);
+  const ship = new THREE.Group(), fittings = new THREE.Group(), fineDetails = new THREE.Group(); ship.add(fittings, fineDetails);
   const l = stats.length, b = stats.beam * 1.6, paint = surface(stats.color, .57, .4);
   const paintAngle = Math.asin(Math.pow((6 - 1.25) / 8.5, 1 / .72));
   const waterlineAngle = Math.asin(Math.pow((6 - .5) / 8.5, 1 / .72));
-  for (const arc of [[0, paintAngle], [Math.PI - paintAngle, Math.PI]]) mesh(fittings, createHullGeometry(l, b, 6, 8.5, 80, 16, arc), paint);
-  for (const arc of [[paintAngle, waterlineAngle], [Math.PI - waterlineAngle, Math.PI - paintAngle]]) mesh(fittings, createHullGeometry(l, b, 6, 8.5, 80, 6, arc), boot);
-  mesh(fittings, createHullGeometry(l, b, 6, 8.5, 80, 24, [waterlineAngle, Math.PI - waterlineAngle]), antifouling);
+  for (const arc of [[0, paintAngle], [Math.PI - paintAngle, Math.PI]]) mesh(fittings, createHullGeometry(l, b, 6, 8.5, 128, 24, arc), paint);
+  for (const arc of [[paintAngle, waterlineAngle], [Math.PI - waterlineAngle, Math.PI - paintAngle]]) mesh(fittings, createHullGeometry(l, b, 6, 8.5, 128, 10, arc), boot);
+  mesh(fittings, createHullGeometry(l, b, 6, 8.5, 128, 40, [waterlineAngle, Math.PI - waterlineAngle]), antifouling);
   mesh(fittings, deckGeometry(l * .985, b * .95, 6.06), teak);
   for (let i = 1; i < 90; i++) {
     const t = i / 90, width = hullWidth(t, b * .94);
     box(fittings, width * 2, .018, .026, 0, 6.08, (t - .5) * l, seams);
   }
-  box(fittings, b * .64, 3, l * .45, 0, 7.5, -l * .05, paint, .45);
+  box(fittings, b * .64, 3, l * .32, 0, 7.5, -l * .01, paint, .45);
   box(fittings, b * .57, 5.6, l * .12, 0, 11, l * .1, paint, .6);
   box(fittings, b * .68, 2.7, l * .105, 0, 15, l * .105, pale, .4);
   box(fittings, b * .71, .35, l * .115, 0, 16.55, l * .105, paint, .12);
@@ -167,7 +180,7 @@ export function makeShip(type) {
     for (const z of [-.23, .17]) makeAA(fittings, side * b * .34, 8.9, l * z, side);
   }
   for (let i = 0; i < 2; i++) {
-    const z = -l * (.045 + i * .13), r = b * .16;
+    const z = -l * (.025 + i * .08), r = b * .12;
     cylinder(fittings, r, r * 1.12, 7, 0, 12, z, paint, 48);
     cylinder(fittings, r * 1.04, r * 1.04, .55, 0, 15.7, z, charcoal, 48);
     const rim = mesh(fittings, new THREE.TorusGeometry(r, .14, 8, 48), steel, 0, 16.02, z); rim.rotation.x = Math.PI / 2;
@@ -194,7 +207,7 @@ export function makeShip(type) {
       const charge = cylinder(fittings, .45, .45, 1.6, side * b * .29, 7, z, charcoal, 24); charge.rotation.z = Math.PI / 2;
     }
     box(fittings, 2.2, .18, 5, side * b * .29, 6.4, -l * .3, steel, .04);
-    for (const z of [-.4, .39]) {
+    for (const z of [-.45, .45]) {
       const x = side * hullWidth(z + .5, b * .65);
       box(fittings, 1.5, .2, 2.4, x, 6.3, l * z, charcoal, .08);
       for (const end of [-1, 1]) {
@@ -203,18 +216,20 @@ export function makeShip(type) {
       }
     }
   }
-  for (const z of [.39, -.4]) {
+  for (const z of [.46, -.46]) {
     cylinder(fittings, .75, .9, 1.2, 0, 6.8, l * z, paint, 40);
     cylinder(fittings, 1.05, 1.05, .18, 0, 7.5, l * z, charcoal, 40);
   }
   for (const side of [-1, 1]) pipe(fittings, [[side * .6, 6.4, l * .4], [side * 1.1, 6.3, l * .435], [side * 1.6, 6.2, l * .46]], .12, charcoal, 16);
-  if (stats.torpedoes) for (const z of [-.02, -.22]) {
-    cylinder(fittings, 1.5, 1.7, .5, 0, 9.25, z * l, charcoal, 32);
+  if (stats.torpedoes) for (const side of [-1, 1]) {
+    const bank = new THREE.Group(); bank.position.set(side * b * .43, 9.7, -l * .015);
+    bank.rotation.y = side * Math.PI / 2;
+    cylinder(bank, 1.5, 1.7, .5, 0, -.45, 0, charcoal);
     for (let i = -1; i <= 1; i++) {
-      const tube = cylinder(fittings, .48, .53, 5.7, i * 1.15, 9.8, z * l, paint, 28); tube.rotation.x = Math.PI / 2;
-      const cap = mesh(fittings, new THREE.TorusGeometry(.49, .07, 8, 24), charcoal, i * 1.15, 9.8, z * l + 2.85);
-      cap.rotation.x = 0;
+      const tube = cylinder(bank, .48, .53, 4.8, i * 1.15, 0, 0, paint, 48); tube.rotation.x = Math.PI / 2;
+      mesh(bank, new THREE.TorusGeometry(.49, .07, 12, 40), charcoal, i * 1.15, 0, 2.4);
     }
+    fittings.add(bank);
   }
   // Tripod mast, radar mesh, ladders and rigging.
   cylinder(fittings, .14, .4, 20, 0, 25, l * .075, charcoal, 20);
@@ -226,13 +241,31 @@ export function makeShip(type) {
   box(fittings, b * .43, .06, .1, 0, 33.65, l * .075, steel);
   for (const z of [.4, -.4]) pipe(fittings, [[0, 34, l * .075], [0, 7, l * z]], .025, charcoal, 1, 5);
   cylinder(fittings, .1, .16, 7, 0, 9.5, -l * .46, steel, 16);
-  batchFittings(fittings);
-
-  const locations = stats.id === 'monarch' ? [.34, .22, -.34] : stats.id === 'resolute' ? [.34, .23, -.24, -.35] : stats.id === 'vanguard' ? [.34, .22, -.34] : [.32, -.34];
-  const turrets = locations.map((z, i) => {
-    const turret = makeTurret(b, l, stats.id === 'monarch' ? 3 : 2, paint);
-    turret.position.set(0, i === 1 && ['monarch', 'vanguard'].includes(stats.id) ? 9.5 : 6.5, z * l);
-    if (z < 0) turret.rotation.y = Math.PI;
+  // Searchlights, hull plating rivets and anchor chains form a separate detail batch.
+  // It is hidden only for distant AI ships; the player and harbor always use full detail.
+  for (const side of [-1, 1]) {
+    for (const y of [3.6, 5.4]) for (let i = 0; i < 48; i++) {
+      const t = .18 + i / 48 * .64;
+      const x = (hullWidth(t, b) * Math.sqrt(1 - Math.pow((6 - y) / 8.5, 2 / .72)) + .025) * side;
+      const rivet = mesh(fineDetails, new THREE.SphereGeometry(.055, 16, 10), steel, x, y, (t - .5) * l); rivet.scale.x = .35;
+    }
+    const x = side * b * .39, z = l * .065;
+    cylinder(fineDetails, .22, .32, 1.4, x, 14.2, z, steel);
+    const lamp = mesh(fineDetails, new THREE.SphereGeometry(.65, 48, 32), paint, x, 15.2, z); lamp.scale.z = .8;
+    const lens = cylinder(fineDetails, .46, .46, .16, x + side * .56, 15.2, z, pale, 64); lens.rotation.z = Math.PI / 2;
+    const rim = mesh(fineDetails, new THREE.TorusGeometry(.49, .085, 16, 64), brass, x + side * .65, 15.2, z); rim.rotation.y = Math.PI / 2;
+    for (let i = 0; i < 10; i++) {
+      const link = mesh(fineDetails, new THREE.TorusGeometry(.15, .045, 10, 24), charcoal, side * (.5 + i * .085), 6.3, l * (.425 + i * .0035));
+      link.rotation.x = Math.PI / 2; if (i % 2) link.rotation.y = Math.PI / 2;
+    }
+  }
+  for (const mount of stats.mounts.filter(m => m.deckY > 7)) {
+    cylinder(fittings, mount.width * .43, mount.width * .48, mount.deckY - 6.1, 0, (mount.deckY + 6.1) / 2, mount.z, paint, 64);
+  }
+  batchFittings(fittings); batchFittings(fineDetails);
+  const turrets = stats.mounts.map(mount => {
+    const turret = makeTurret(mount, paint);
+    turret.position.set(mount.x, mount.deckY, mount.z); turret.rotation.y = mount.home;
     ship.add(turret); return turret;
   });
   const flagGeometry = new THREE.PlaneGeometry(4, 2.3, 12, 6), colors = [];
@@ -245,7 +278,7 @@ export function makeShip(type) {
   const flag = mesh(ship, flagGeometry, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 1, metalness: 0 }), 2, 11.9, -l * .46);
   let triangles = 0, drawCalls = 0;
   ship.traverse(object => { if (object.isMesh) { triangles += (object.geometry.index?.count || object.geometry.attributes.position.count) / 3; drawCalls++; } });
-  ship.userData = { turrets, stats, flag, triangles, drawCalls };
+  ship.userData = { turrets, stats, flag, fineDetails, triangles, drawCalls };
   return ship;
 }
 
@@ -258,4 +291,31 @@ export function animateShip(ship, time) {
     positions.setZ(i, Math.sin(x * 1.7 - time * 4) * .2 * ((x + 2) / 4));
   }
   positions.needsUpdate = true;
+}
+
+// A silhouette at long range does not need subpixel rivets and curved barrel collars.
+// It shares the same battery dimensions, so gun positions and arcs remain exact.
+export function makeDistantShip(stats) {
+  const ship = new THREE.Group(), fittings = new THREE.Group(); ship.add(fittings);
+  const l = stats.length, b = stats.beam * 1.6, paint = surface(stats.color, .57, .4);
+  mesh(fittings, createHullGeometry(l, b, 6, 8.5, 24, 14), paint);
+  mesh(fittings, deckGeometry(l * .985, b * .95, 6.06, 24), teak);
+  mesh(fittings, new THREE.BoxGeometry(b * .64, 3, l * .32), paint, 0, 7.5, -l * .01);
+  mesh(fittings, new THREE.BoxGeometry(b * .57, 5.6, l * .12), paint, 0, 11, l * .1);
+  mesh(fittings, new THREE.BoxGeometry(b * .68, 2.7, l * .105), pale, 0, 15, l * .105);
+  for (let i = 0; i < 2; i++) cylinder(fittings, b * .12, b * .13, 7, 0, 12, -l * (.025 + i * .08), charcoal, 16);
+  cylinder(fittings, .14, .4, 20, 0, 25, l * .075, charcoal, 8);
+  batchFittings(fittings);
+  const turrets = stats.mounts.map(mount => {
+    const turret = new THREE.Group();
+    cylinder(turret, mount.width * .46, mount.width * .49, 1.7, 0, .8, 0, charcoal, 16);
+    mesh(turret, new THREE.BoxGeometry(mount.width, 3.3, mount.depth), paint, 0, 3.4, 0);
+    for (let j = 0; j < mount.count; j++) {
+      const gun = cylinder(turret, mount.barrelRadius, mount.barrelRadius * 1.25, mount.barrelLength, (j - (mount.count - 1) / 2) * mount.spacing, mount.bore, mount.depth * .3 + mount.barrelLength / 2, charcoal, 12);
+      gun.rotation.x = Math.PI / 2;
+    }
+    batchFittings(turret); turret.position.set(mount.x, mount.deckY, mount.z); turret.rotation.y = mount.home;
+    ship.add(turret); return turret;
+  });
+  ship.userData = { turrets, stats }; return ship;
 }

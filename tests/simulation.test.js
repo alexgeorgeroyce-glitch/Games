@@ -31,14 +31,14 @@ test('engine throttle persists, rudder turns, and reverse is bounded', () => {
   assert.equal(b.player.throttle, -.35);
 });
 
-test('a main battery salvo lands, deals full damage, and observes reload', () => {
+test('bow fire uses only its forward guns and observes their reload', () => {
   const [b, target] = duel(); const hull = target.hull;
   assert.equal(b.fire(b.player, target), true);
   assert.equal(b.fire(b.player, target), false);
   assert.equal(target.hull, hull, 'shells must travel before damaging the target');
   advance(b, 1);
-  assert.equal(Math.round(hull - target.hull), b.player.stats.damage);
-  assert.equal(Math.round(b.damage), b.player.stats.damage);
+  assert.equal(Math.round(hull - target.hull), b.player.stats.foreTurrets * b.player.stats.barrels * b.player.stats.shellDamage);
+  assert.equal(Math.round(b.damage), b.player.stats.foreTurrets * b.player.stats.barrels * b.player.stats.shellDamage);
   advance(b, 3); assert.equal(b.player.reload, 0);
   assert.equal(b.fire(b.player, target), true);
 });

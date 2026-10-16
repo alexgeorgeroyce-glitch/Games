@@ -1,13 +1,24 @@
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:net';
+import { once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { runNavalChecks } from './naval-checks.mjs';
 
-const base = process.env.TEST_BASE_URL || 'http://127.0.0.1:4173';
-const server = process.env.TEST_BASE_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', '4173', '--strictPort'], { stdio: 'pipe' });
+const port = await new Promise((resolve, reject) => {
+  const probe = createServer(); probe.on('error', reject);
+  probe.listen(0, '127.0.0.1', () => { const selected = probe.address().port; probe.close(() => resolve(selected)); });
+});
+const base = process.env.TEST_BASE_URL || `http://127.0.0.1:${port}`;
+const server = process.env.TEST_BASE_URL ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { stdio: 'pipe' });
+let serverLog = '';
+server?.stdout.on('data', data => serverLog += data.toString());
+server?.stderr.on('data', data => serverLog += data.toString());
 let browser;
 try {
   for (let i = 0; i < 100; i++) {
+    if (server && server.exitCode !== null) throw Error('Test server exited: ' + serverLog);
     try { if ((await fetch(base)).ok) break; } catch {}
     if (i === 99) throw Error('Dev server did not start');
     await new Promise(r => setTimeout(r, 150));
@@ -20,6 +31,7 @@ try {
     if (existsSync('/usr/bin/chromium')) launch.executablePath = '/usr/bin/chromium';
   }
   browser = await chromium.launch(launch);
+  if (process.env.TEST_NAVAL_ONLY === '1') { await runNavalChecks(browser, base, []); } else {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -29,7 +41,7 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(450);
   assert.equal(await page.getByRole('heading', { name: 'Kestrel.' }).count(), 1);
-  assert.ok(await page.evaluate(() => window.ironTide.world.showroomShip.userData.triangles > 50000));
+  assert.ok(await page.evaluate(() => window.ironTide.world.showroomShip.userData.triangles > 200000));
   await page.screenshot({ animations: 'disabled', path: 'artifacts/harbor.png' });
   await page.getByRole('button', { name: 'AUDIO', exact: true }).click();
   await page.waitForSelector('#master-volume');
@@ -68,8 +80,8 @@ try {
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'RESEARCH', exact: true }).click();
   await page.waitForTimeout(300);
-  assert.equal(await page.locator('.research-ship').count(), 4);
-  assert.equal(await page.locator('.research-ship button:disabled').count(), 3);
+  assert.equal(await page.locator('.research-ship').count(), 12);
+  assert.equal(await page.locator('.research-ship button:disabled').count(), 11);
   await page.screenshot({ animations: 'disabled', path: 'artifacts/research.png' });
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'TO BATTLE', exact: true }).click();
@@ -154,9 +166,16 @@ try {
   await mobile.waitForFunction(() => window.ironTide.battle.player.throttle > .1);
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await mobile.screenshot({ animations: 'disabled', path: 'artifacts/mobile-battle.png' });
+  await mobile.close();
+  await runNavalChecks(browser, base, errors);
   assert.deepEqual(errors, [], 'No browser runtime or rendering errors');
   console.log('PASS: WebGL harbor, controls, research gates, deployment, throttle/rudder, pause/resume, shell fire, torpedoes, repairs, victory/rewards, research/equip, persisted fleet, second sortie, defeat, mobile layout and touch helm.');
+  }
 } finally {
   await browser?.close();
-  server?.kill('SIGTERM');
+  if (server && server.exitCode === null) {
+    server.kill('SIGTERM');
+    const timeout = setTimeout(() => server.kill('SIGKILL'), 2000);
+    await once(server, 'exit'); clearTimeout(timeout);
+  }
 }

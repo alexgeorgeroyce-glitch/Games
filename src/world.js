@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { SHIPS, ISLANDS } from './data.js';
 import { clamp } from './simulation.js';
-import { makeShip, animateShip, sharedShipMaterials } from './ships.js';
+import { batterySolution } from './weapons.js';
+import { makeShip, makeDistantShip, animateShip, sharedShipMaterials } from './ships.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -115,6 +116,7 @@ export class World {
     this.scene.remove(object);
   }
   selectShip(type) {
+    if (this.showroomShip?.userData.stats.id === type) return;
     if (this.showroomShip) this.disposeObject(this.showroomShip);
     this.showroomShip = makeShip(type); this.showroomShip.rotation.y = -.55; this.scene.add(this.showroomShip);
   }
@@ -122,7 +124,9 @@ export class World {
     this.mode = 'battle'; this.showroomShip.visible = false; this.capRing.visible = this.capBuoys.visible = this.aimMarker.visible = true;
     for (const mesh of this.ships.values()) this.disposeObject(mesh); this.ships.clear();
     for (const s of battle.ships) {
-      const mesh = makeShip(s.type); this.ships.set(s.id, mesh); this.scene.add(mesh);
+      const mesh = makeShip(s.type);
+      if (s.id !== battle.player.id) { const distant = makeDistantShip(s.stats); distant.visible = false; mesh.add(distant); mesh.userData.distant = distant; }
+      this.ships.set(s.id, mesh); this.scene.add(mesh);
       const wakeGeo = new THREE.BufferGeometry(); wakeGeo.setAttribute('position', new THREE.Float32BufferAttribute([-3, 0, 0, -14, 0, -120, 14, 0, -120, -3, 0, 0, 14, 0, -120, 3, 0, 0], 3));
       const wake = new THREE.Mesh(wakeGeo, new THREE.MeshBasicMaterial({ color: 0xc3e0dc, transparent: true, opacity: .12, side: THREE.DoubleSide, depthWrite: false }));
       wake.position.set(0, 1.7, -s.stats.length * .45); mesh.add(wake); mesh.userData.wake = wake;
@@ -143,7 +147,13 @@ export class World {
       mesh.position.set(s.x, Math.sin(this.time * 1.6 + s.id) * .55 - Math.min(18, s.deadTime * 2), s.z);
       mesh.rotation.set(Math.sin(this.time * .8 + s.id) * .012, s.heading, Math.sin(this.time + s.id) * .015 + (s.dead ? Math.min(.6, s.deadTime * .06) : 0));
       mesh.visible = s.deadTime < 12;
-      for (const turret of mesh.userData.turrets) turret.rotation.y = s.gunAngle - s.heading;
+      const solution = batterySolution(s, s.aim);
+      for (const [i, turret] of mesh.userData.turrets.entries()) turret.rotation.y = solution.mounts[i].yaw;
+      const nearby = s.id === battle.player.id || Math.hypot(s.x - battle.player.x, s.z - battle.player.z) < 750;
+      if (mesh.userData.distant) {
+        for (const child of mesh.children) if (child !== mesh.userData.wake) child.visible = child === mesh.userData.distant ? !nearby : nearby;
+        mesh.userData.distant.userData.turrets.forEach((turret, i) => turret.rotation.y = solution.mounts[i].yaw);
+      }
       mesh.userData.wake.material.opacity = s.dead ? 0 : Math.min(.18, Math.abs(s.speed) * .005);
       mesh.userData.wake.scale.set(1 + Math.sin(this.time * 3) * .08, 1, Math.max(.01, Math.abs(s.speed) / 30));
       if (!s.dead && s.hull < s.stats.hull * .4 && Math.random() < dt * 5) this.effect(s.x, s.z, 'smoke');
@@ -162,10 +172,11 @@ export class World {
     this.aimMarker.position.set(battle.aim.x, 3, battle.aim.z);
     this.capRing.material.color.setHex(battle.contested ? 0xeb816e : battle.capture > 0 ? 0x70c8be : 0xe3c28c);
   }
-  effect(x, z, type = 'splash') {
+  effect(x, z, type = 'splash', y = null, direction = 0) {
     const smoke = type === 'smoke', fire = type === 'fire', large = type === 'explosion';
-    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 2), new THREE.MeshBasicMaterial({ color: smoke ? 0x343b3d : fire || large ? 0xffbe66 : 0xb6d8db, transparent: true, opacity: smoke ? .28 : .8, depthWrite: false }));
-    mesh.position.set(x, smoke ? 20 : 3, z); this.scene.add(mesh); this.effects.push({ mesh, life: 0, duration: smoke ? 4 : large ? 1.5 : 1, smoke, fire, large });
+    const mesh = new THREE.Mesh(fire ? new THREE.ConeGeometry(1.1, 5.2, 24) : new THREE.IcosahedronGeometry(1, 2), new THREE.MeshBasicMaterial({ color: smoke ? 0x343b3d : fire || large ? 0xffbe66 : 0xb6d8db, transparent: true, opacity: smoke ? .28 : .8, depthWrite: false }));
+    if (fire) { mesh.rotation.set(Math.PI / 2, 0, 0); mesh.quaternion.premultiply(new THREE.Quaternion().setFromAxisAngle(UP, direction)); }
+    mesh.position.set(x + (fire ? Math.sin(direction) * 2.6 : 0), y ?? (smoke ? 20 : fire ? 12 : 3), z + (fire ? Math.cos(direction) * 2.6 : 0)); this.scene.add(mesh); this.effects.push({ mesh, life: 0, duration: smoke ? 4 : fire ? .16 : large ? 1.5 : 1, smoke, fire, large });
     if (this.effects.length > 100) this.disposeObject(this.effects.shift().mesh);
   }
   aimAt(clientX, clientY, battle) {
@@ -174,7 +185,7 @@ export class World {
     const point = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(this.waterPlane, point)) {
       const p = battle.player, dx = point.x - p.x, dz = point.z - p.z, dist = Math.hypot(dx, dz);
-      battle.aim = { x: p.x + dx * Math.min(1, 1850 / dist), z: p.z + dz * Math.min(1, 1850 / dist) };
+      battle.aim = { x: p.x + dx * Math.min(1, (p.stats.range - 50) / dist), z: p.z + dz * Math.min(1, (p.stats.range - 50) / dist) };
     }
   }
   project(x, y, z) {
@@ -186,8 +197,9 @@ export class World {
     if (this.mode === 'harbor') {
       const compact = innerWidth < 900;
       const angle = .67 + Math.sin(this.time * .035) * .13;
-      const radius = compact ? 260 : 148;
-      const desired = new THREE.Vector3(Math.sin(angle) * radius, compact ? 70 : 65, Math.cos(angle) * radius);
+      const scale = this.showroomShip.userData.stats.length / 76;
+      const radius = (compact ? 260 : 160) * Math.max(1, scale * .92);
+      const desired = new THREE.Vector3(Math.sin(angle) * radius, (compact ? 70 : 65) * Math.max(1, scale * .7), Math.cos(angle) * radius);
       this.camera.position.lerp(desired, Math.min(1, dt * 2));
       this.target.lerp(new THREE.Vector3(compact ? -15 : 10, 6, compact ? 12 : 0), Math.min(1, dt * 2));
       animateShip(this.showroomShip, this.time);
@@ -197,15 +209,16 @@ export class World {
       this.syncShips(battle, paused ? 0 : dt);
       const p = battle.player;
       const angle = p.heading + Math.PI + this.orbit;
-      const radius = 220 * this.zoom;
-      const desired = new THREE.Vector3(p.x + Math.sin(angle) * radius, 55 + 170 * this.elevation * this.zoom, p.z + Math.cos(angle) * radius);
+      const shipScale = Math.max(1, p.stats.length / 120);
+      const radius = 230 * this.zoom * shipScale;
+      const desired = new THREE.Vector3(p.x + Math.sin(angle) * radius, (55 + 170 * this.elevation * this.zoom) * shipScale, p.z + Math.cos(angle) * radius);
       this.camera.position.lerp(desired, Math.min(1, dt * 4));
       this.target.lerp(new THREE.Vector3(p.x + Math.sin(p.heading) * 80, 8, p.z + Math.cos(p.heading) * 80), Math.min(1, dt * 4));
     }
     this.camera.lookAt(this.target);
     for (const e of this.effects) {
       e.life += dt; const t = e.life / e.duration;
-      e.mesh.scale.setScalar(e.smoke ? 8 + t * 25 : e.fire ? 4 + t * 10 : e.large ? 10 + t * 26 : 2 + t * 12);
+      e.mesh.scale.setScalar(e.smoke ? 8 + t * 25 : e.fire ? 1 + t * .7 : e.large ? 10 + t * 26 : 2 + t * 12);
       if (!e.smoke && !e.fire && !e.large) e.mesh.scale.y = 2.5 * (1 - t) + .3;
       e.mesh.position.y += dt * (e.smoke ? 8 : e.large ? 6 : 2);
       e.mesh.material.opacity = Math.max(0, (e.smoke ? .28 : .8) * (1 - t));

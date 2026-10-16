@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { SHIPS } from '../src/data.js';
-import { makeShip, animateShip, createHullGeometry, sharedShipMaterials } from '../src/ships.js';
+import { makeShip, makeDistantShip, animateShip, createHullGeometry, sharedShipMaterials } from '../src/ships.js';
 import { NavalAudio, readAudioSettings } from '../src/audio.js';
 
 function dispose(ship) {
@@ -15,9 +15,9 @@ function dispose(ship) {
 test('each detailed ship has a curved, finite mesh and a bounded rendering cost', () => {
   for (const stats of SHIPS) {
     const ship = makeShip(stats.id);
-    assert.ok(ship.userData.triangles > 50000, `${stats.name} has detailed geometry`);
-    assert.ok(ship.userData.triangles < 120000, 'geometry stays within the fleet budget');
-    assert.ok(ship.userData.drawCalls <= 32, 'deck fittings are batched');
+    assert.ok(ship.userData.triangles > 200000, `${stats.name} has detailed geometry`);
+    assert.ok(ship.userData.triangles < 325000, 'geometry stays within the fleet budget');
+    assert.ok(ship.userData.drawCalls <= 36, 'deck fittings are batched');
     const bounds = new THREE.Box3().setFromObject(ship), size = bounds.getSize(new THREE.Vector3());
     assert.ok(size.z >= stats.length * .98 && size.z < stats.length * 1.2, 'ship length is preserved');
     assert.ok(size.y >= 35 && size.y < 40, 'mast and underwater hull are present');
@@ -28,9 +28,9 @@ test('each detailed ship has a curved, finite mesh and a bounded rendering cost'
         assert.ok(object.geometry.attributes[attribute].array.every(Number.isFinite), `${stats.name}: finite ${attribute}`);
       }
     });
-    const expectedTurrets = stats.id === 'resolute' ? 4 : ['monarch', 'vanguard'].includes(stats.id) ? 3 : 2;
+    const expectedTurrets = stats.foreTurrets + stats.aftTurrets;
     assert.equal(ship.userData.turrets.length, expectedTurrets);
-    assert.equal(ship.userData.turrets.length * (stats.id === 'monarch' ? 3 : 2), stats.guns);
+    assert.equal(ship.userData.turrets.length * stats.barrels, stats.guns);
     dispose(ship);
   }
 });
@@ -79,4 +79,19 @@ test('audio is optional when browser storage or Web Audio is unavailable', async
   audio.setVolume(.2); audio.setEnabled(false); audio.setEnabled(true);
   audio.update(null); await audio.setHidden(true); await audio.setHidden(false);
   assert.equal(audio.status.state, 'locked');
+});
+
+
+test('distant models retain exact battery positions with a smaller geometry budget', () => {
+  for (const stats of SHIPS) {
+    const model = makeDistantShip(stats); let triangles = 0;
+    model.traverse(o => { if (o.isMesh) triangles += (o.geometry.index?.count || o.geometry.attributes.position.count) / 3; });
+    assert.ok(triangles < 12000);
+    assert.equal(model.userData.turrets.length, stats.mounts.length);
+    for (const [i, turret] of model.userData.turrets.entries()) {
+      assert.equal(turret.position.z, stats.mounts[i].z);
+      assert.equal(turret.position.y, stats.mounts[i].deckY);
+    }
+    dispose(model);
+  }
 });

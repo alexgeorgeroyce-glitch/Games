@@ -1,4 +1,5 @@
 import { SHIPS, ISLANDS } from './data.js';
+import { batterySolution, muzzlePosition, updateBatteryReload } from './weapons.js';
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -12,7 +13,8 @@ export class Battle {
     this.capture = 0; this.enemyCapture = 0; this.kills = 0; this.damage = 0; this.capSeconds = 0;
     this.player = this.addShip(id, 0, -40, 950, Math.PI, 'player', 'YOU');
     this.addShip('kestrel', 0, -280, 1050, Math.PI, 'ally', 'ITS Ardent');
-    const enemies = difficulty === 'cadet' ? ['kestrel', 'kestrel', 'vanguard'] : difficulty === 'veteran' ? ['vanguard', 'resolute', 'kestrel', 'vanguard'] : ['kestrel', 'vanguard', 'kestrel'];
+    let enemies = difficulty === 'cadet' ? ['kestrel', 'kestrel', 'vanguard'] : difficulty === 'veteran' ? ['vanguard', 'resolute', 'kestrel', 'vanguard'] : ['kestrel', 'vanguard', 'kestrel'];
+    if (this.player.stats.level >= 4) enemies = difficulty === 'cadet' ? ['vanguard', 'resolute', 'monarch'] : difficulty === 'veteran' ? ['sentinel', 'sovereign', id, 'tempest'] : ['bastion', id, 'tempest'];
     enemies.forEach((ship, i) => this.addShip(ship, 1, -320 + i * 310, -850 - (i % 2) * 200, 0, 'enemy', ['RNS Viper', 'RNS Tempest', 'RNS Jackal', 'RNS Reaver'][i]));
     this.aim = { x: 0, z: -700 };
     this.input = { throttle: 0, steer: 0, fire: false };
@@ -21,23 +23,43 @@ export class Battle {
   addShip(type, team, x, z, heading, role, name) {
     const stats = SHIPS.find(s => s.id === type) || SHIPS[0];
     const ship = { id: this.ships.length, type, team, x, z, heading, role, name, stats, hull: stats.hull, speed: 0, throttle: 0, reload: 0, torpedoReload: 0, torpedoes: stats.torpedoes, repairs: 2, repairTime: 0, dead: false, deadTime: 0, aiTimer: 2 + this.ships.length * 1.2, gunAngle: heading };
+    ship.mounts = stats.mounts.map(() => ({ reload: 0 }));
+    ship.aim = { x: x + Math.sin(heading) * 1000, z: z + Math.cos(heading) * 1000 };
     this.ships.push(ship); return ship;
   }
   emit(type, data = {}) { this.events.push({ type, ...data }); }
   fire(ship, target, torpedo = false) {
     if (this.result || ship.dead || !Number.isFinite(target.x) || !Number.isFinite(target.z)) return false;
-    if (torpedo ? ship.torpedoReload > 0 || ship.torpedoes <= 0 : ship.reload > 0) return false;
     const dist = distance(ship, target);
-    if (!torpedo && dist > 1900) return false;
-    if (torpedo) { ship.torpedoes--; ship.torpedoReload = 14; } else ship.reload = ship.stats.reload;
-    const angle = headingTo(ship, target);
-    const count = torpedo ? 1 : Math.min(3, Math.ceil(ship.stats.guns / 3));
-    for (let i = 0; i < count; i++) {
-      const offset = (i - (count - 1) / 2) * 11;
-      const end = { x: target.x + Math.cos(angle) * offset, z: target.z - Math.sin(angle) * offset };
-      this.projectiles.push({ id: this.serial++, owner: ship.id, team: ship.team, torpedo, x: ship.x, z: ship.z, sx: ship.x, sz: ship.z, tx: end.x, tz: end.z, y: torpedo ? 1 : 12, life: 0, duration: torpedo ? 24 : Math.max(.6, dist / 520), vx: Math.sin(angle) * 110, vz: Math.cos(angle) * 110, damage: torpedo ? 950 : ship.stats.damage / count });
+    if (!torpedo && dist > ship.stats.range) return false;
+    ship.aim = { x: target.x, z: target.z };
+    if (torpedo) {
+      if (ship.torpedoReload > 0 || ship.torpedoes <= 0) return false;
+      ship.torpedoes--; ship.torpedoReload = 14;
+      const angle = headingTo(ship, target);
+      this.projectiles.push({ id: this.serial++, owner: ship.id, team: ship.team, torpedo: true, x: ship.x, z: ship.z, sx: ship.x, sz: ship.z, tx: target.x, tz: target.z, y: 1, life: 0, duration: 24, vx: Math.sin(angle) * 110, vz: Math.cos(angle) * 110, damage: 950 });
+      this.emit('fire', { ship, torpedo: true }); return true;
     }
-    this.emit('fire', { ship, torpedo }); return true;
+    const solution = batterySolution(ship, target);
+    const firing = solution.mounts.filter(mount => mount.ready);
+    if (!firing.length) { updateBatteryReload(ship); return false; }
+    let guns = 0;
+    for (const mount of firing) {
+      ship.mounts[mount.index].reload = ship.stats.reload;
+      for (let barrel = 0; barrel < mount.count; barrel++) {
+        const muzzle = muzzlePosition(ship, mount, barrel);
+        const offset = (barrel - (mount.count - 1) / 2) * 2;
+        const angle = headingTo(muzzle, target);
+        const end = { x: target.x + Math.cos(angle) * offset, z: target.z - Math.sin(angle) * offset };
+        this.projectiles.push({ id: this.serial++, owner: ship.id, team: ship.team, torpedo: false, mount: mount.index, barrel,
+          x: muzzle.x, z: muzzle.z, sx: muzzle.x, sz: muzzle.z, sy: muzzle.y, tx: end.x, tz: end.z, y: muzzle.y, life: 0,
+          duration: Math.max(.3, distance(muzzle, end) / (500 + ship.stats.caliberMm * .35)), damage: ship.stats.shellDamage });
+        guns++;
+      }
+    }
+    updateBatteryReload(ship);
+    this.emit('fire', { ship, torpedo: false, guns, broadside: guns === ship.stats.guns, side: solution.side, damage: guns * ship.stats.shellDamage, mounts: firing });
+    return true;
   }
   repair() {
     const p = this.player;
@@ -61,7 +83,8 @@ export class Battle {
     dt = Math.min(dt, .1); this.time += dt; this.elapsed += dt;
     for (const s of this.ships) {
       if (s.dead) { s.deadTime += dt; continue; }
-      s.reload = Math.max(0, s.reload - dt); s.torpedoReload = Math.max(0, s.torpedoReload - dt);
+      for (const mount of s.mounts) mount.reload = Math.max(0, mount.reload - dt);
+      updateBatteryReload(s); s.torpedoReload = Math.max(0, s.torpedoReload - dt);
       if (s.repairTime > 0) {
         const repairStep = Math.min(dt, s.repairTime);
         s.repairTime = Math.max(0, s.repairTime - dt);
@@ -71,7 +94,7 @@ export class Battle {
       if (s.role === 'player') {
         s.throttle = clamp(s.throttle + this.input.throttle * dt * .32, -.35, 1);
         steer = this.input.steer;
-        s.gunAngle = headingTo(s, this.aim);
+        s.aim = { ...this.aim }; s.gunAngle = headingTo(s, this.aim);
         if (this.input.fire) this.fire(s, this.aim);
       } else {
         const targets = this.ships.filter(t => !t.dead && t.team !== s.team).sort((a, b) => distance(s, a) - distance(s, b));
@@ -79,7 +102,7 @@ export class Battle {
         if (target) {
           const d = distance(s, target);
           let desired = headingTo(s, d > 1050 ? { x: target.x * .4, z: target.z * .4 } : target);
-          if (d < 650) desired += 1.1;
+          if (d < 1250) desired = headingTo(s, target) + (s.id % 2 ? 1.4 : -1.4);
           // Push away from island shorelines before steering toward a target.
           for (const island of ISLANDS) {
             if (distance(s, island) < island.r + 145) desired = headingTo(island, s);
@@ -87,8 +110,10 @@ export class Battle {
           steer = clamp(angleDelta(desired, s.heading) * 2, -1, 1);
           s.throttle = d < 450 ? .35 : .78;
           s.gunAngle = headingTo(s, target);
+          const lead = d / (500 + s.stats.caliberMm * .35);
+          s.aim = { x: target.x + Math.sin(target.heading) * target.speed * lead, z: target.z + Math.cos(target.heading) * target.speed * lead };
           s.aiTimer -= dt;
-          if (s.aiTimer <= 0 && d < 1700) {
+          if (s.aiTimer <= 0 && d < s.stats.range - 100) {
             const flight = d / 520;
             const spread = this.difficulty === 'cadet' ? 110 : this.difficulty === 'veteran' ? 25 : 70;
             this.fire(s, { x: target.x + Math.sin(target.heading) * target.speed * flight + Math.sin(this.time * 2 + s.id) * spread, z: target.z + Math.cos(target.heading) * target.speed * flight + Math.cos(this.time * 1.7 + s.id) * spread });
@@ -104,6 +129,7 @@ export class Battle {
         if (s.role === 'player' && (!s.lastCollision || this.time - s.lastCollision > 3)) { this.emit('collision'); s.lastCollision = this.time; }
       } else { s.x = clamp(nx, -2350, 2350); s.z = clamp(nz, -2350, 2350); }
     }
+    for (const s of this.ships) if (!s.dead) updateBatteryReload(s);
     for (const p of this.projectiles) {
       p.life += dt;
       if (p.torpedo) {
@@ -113,7 +139,7 @@ export class Battle {
       } else {
         const t = Math.min(1, p.life / p.duration);
         p.x = p.sx + (p.tx - p.sx) * t; p.z = p.sz + (p.tz - p.sz) * t;
-        p.y = 12 * (1 - t) + Math.sin(t * Math.PI) * Math.min(140, p.duration * 50);
+        p.y = p.sy * (1 - t) + Math.sin(t * Math.PI) * Math.min(140, p.duration * 50);
         if (t >= 1) {
           const target = this.ships.filter(s => !s.dead && s.team !== p.team && distance(s, p) < 42 + s.stats.beam).sort((a, b) => distance(a, p) - distance(b, p))[0];
           if (target) this.hit(target, p.damage, p.owner);
