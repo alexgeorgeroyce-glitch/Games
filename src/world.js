@@ -1,87 +1,18 @@
 import * as THREE from 'three';
 import { SHIPS, ISLANDS } from './data.js';
 import { clamp } from './simulation.js';
+import { makeShip, animateShip, sharedShipMaterials } from './ships.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const mat = (color, extra = {}) => new THREE.MeshStandardMaterial({ color, roughness: .68, metalness: .25, ...extra });
-const metal = mat(0x919b9d), dark = mat(0x293b43), deck = mat(0x757c73), light = mat(0xb4bcb9), red = mat(0x753e38);
-const sharedMaterials = new Set([metal, dark, deck, light, red]);
 const temp = new THREE.Object3D();
-function box(g, w, h, d, x, y, z, material = metal) {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material); m.position.set(x, y, z); g.add(m); return m;
-}
-function cylinder(g, r1, r2, h, x, y, z, material = metal, seg = 12) {
+function cylinder(g, r1, r2, h, x, y, z, material, seg = 32) {
   const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), material); m.position.set(x, y, z); g.add(m); return m;
 }
-function hullMesh(length, beam, y, depth, material) {
-  const ring = [[0, .5], [.29, .43], [.49, .24], [.5, -.3], [.3, -.47], [0, -.5], [-.3, -.47], [-.5, -.3], [-.49, .24], [-.29, .43]];
-  const positions = [];
-  for (let i = 0; i < ring.length; i++) {
-    const a = ring[i], b = ring[(i + 1) % ring.length];
-    const A = [a[0] * beam, y, a[1] * length], B = [b[0] * beam, y, b[1] * length];
-    const C = [a[0] * beam * .72, y - depth, a[1] * length * .94], D = [b[0] * beam * .72, y - depth, b[1] * length * .94];
-    positions.push(...A, ...B, ...C, ...B, ...D, ...C, 0, y, 0, ...B, ...A);
-  }
-  for (let i = 0; i < positions.length; i += 9) {
-    const b = positions.slice(i + 3, i + 6);
-    positions.splice(i + 3, 3, ...positions.slice(i + 6, i + 9));
-    positions.splice(i + 6, 3, ...b);
-  }
-  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geo.computeVertexNormals();
-  return new THREE.Mesh(geo, material);
-}
-
-export function makeShip(type) {
-  const s = SHIPS.find(s => s.id === type) || SHIPS[0], g = new THREE.Group();
-  const l = s.length, b = s.beam * 1.6, paint = mat(s.color);
-  g.add(hullMesh(l, b, 2.4, 5, red)); g.add(hullMesh(l, b, 6, 4, paint));
-  g.add(hullMesh(l * .96, b * .92, 6.2, .25, deck));
-  box(g, b * .65, 3, l * .47, 0, 7.5, -l * .05, paint);
-  box(g, b * .57, 6, l * .12, 0, 11, l * .1, paint);
-  box(g, b * .67, 2.5, l * .1, 0, 15, l * .105, light);
-  box(g, b * .7, .7, l * .11, 0, 16.8, l * .105, dark);
-  // Bridge windows wrap the upper deck.
-  for (let i = -2; i <= 2; i++) box(g, 1, .9, .18, i * b * .115, 15, l * .155 + .12, dark);
-  for (const side of [-1, 1]) box(g, .15, .9, l * .07, side * b * .34, 15, l * .1, dark);
-  const funnels = s.id === 'monarch' ? 2 : 2;
-  for (let i = 0; i < funnels; i++) {
-    cylinder(g, b * .16, b * .2, 7, 0, 12, -l * (.045 + i * .13), paint);
-    cylinder(g, b * .165, b * .165, 1.1, 0, 15.7, -l * (.045 + i * .13), dark);
-  }
-  cylinder(g, .28, .5, 21, 0, 24, l * .075, dark, 6);
-  box(g, b * .75, .35, .35, 0, 29, l * .075, dark);
-  box(g, b * .5, .25, .25, 0, 32, l * .075, dark);
-  // Mast stays, rails, and deck fittings.
-  const lineMat = new THREE.LineBasicMaterial({ color: 0x647075, transparent: true, opacity: .8 });
-  const points = [new THREE.Vector3(0, 34, l * .075), new THREE.Vector3(0, 7, l * .4), new THREE.Vector3(0, 34, l * .075), new THREE.Vector3(0, 7, -l * .4)];
-  g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), lineMat));
-  for (const side of [-1, 1]) {
-    const pts = []; for (let i = 0; i < 13; i++) { const z = -l * .36 + i * l * .06; const x = side * b * (.45 - Math.max(0, z / l - .2) * 1.1); pts.push(new THREE.Vector3(x, 6.1, z), new THREE.Vector3(x, 7.5, z)); }
-    g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
-    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.filter((_, i) => i % 2)), lineMat));
-    box(g, 1.4, 1.5, 7, side * b * .4, 8, -l * .12, light);
-    for (let i = 0; i < 3; i++) cylinder(g, .9, .9, .8, side * b * .3, 6.8, -l * .33 + i * 3, dark);
-  }
-  const turrets = [];
-  const locations = s.id === 'monarch' ? [.34, .22, -.34] : s.id === 'resolute' ? [.34, .23, -.24, -.35] : [.32, -.34];
-  for (const [i, z] of locations.entries()) {
-    const t = new THREE.Group(); t.position.set(0, i === 1 && s.id === 'monarch' ? 9 : 6.5, z * l);
-    cylinder(t, b * .23, b * .26, 2, 0, 1, 0, dark);
-    box(t, b * .5, 3, b * .5, 0, 3, 0, paint);
-    const barrels = s.id === 'monarch' ? 3 : 2;
-    for (let j = 0; j < barrels; j++) {
-      const gun = cylinder(t, .34, .5, l * .16, (j - (barrels - 1) / 2) * 1.2, 3.3, l * .09, dark, 8);
-      gun.rotation.x = Math.PI / 2;
-    }
-    if (z < 0) t.rotation.y = Math.PI;
-    g.add(t); turrets.push(t);
-  }
-  if (s.torpedoes) for (const z of [-.03, -.21]) for (let i = -1; i <= 1; i++) {
-    const tube = cylinder(g, .6, .6, 6, i * 1.4, 9.6, z * l, dark, 8); tube.rotation.x = Math.PI / 2;
-  }
-  cylinder(g, .16, .2, 8, 0, 9, -l * .46, dark, 5);
-  const flag = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 2.5), new THREE.MeshBasicMaterial({ color: 0xe8ba72, side: THREE.DoubleSide })); flag.position.set(2.1, 12, -l * .46); g.add(flag);
-  g.userData = { turrets, stats: s }; return g;
+function islandHeight(t, angle, index, height) {
+  const ridge = Math.sin(t * Math.PI) * (.18 * Math.sin(angle * 3 + t * 8 + index) + .055 * Math.sin(angle * 9 - t * 13));
+  return Math.pow(Math.max(0, 1 - t), 1.22) * height * (1 + ridge);
 }
 
 export class World {
@@ -134,40 +65,52 @@ export class World {
     marker.visible = false; this.aimMarker = marker; this.scene.add(marker);
   }
   buildIslands() {
-    const rockMat = mat(0x69796d, { flatShading: true, roughness: 1 }), sandMat = mat(0x9b9c85, { roughness: 1 });
-    const trees = new THREE.InstancedMesh(new THREE.ConeGeometry(7, 25, 5), mat(0x344e45, { flatShading: true, roughness: 1 }), ISLANDS.length * 65);
+    const rockMat = mat(0xffffff, { vertexColors: true, roughness: 1 }), sandMat = mat(0xa2a48c, { roughness: 1 });
+    const treeCount = ISLANDS.length * 95;
+    const crowns = [[8.5, 18, 10], [6.5, 16, 17], [4.3, 13, 24]].map(([radius, height, y]) => new THREE.ConeGeometry(radius, height, 12, 2).translate(0, y, 0));
+    const treeGeometry = mergeGeometries(crowns); crowns.forEach(g => g.dispose());
+    const trees = new THREE.InstancedMesh(treeGeometry, mat(0x385448, { roughness: 1 }), treeCount);
+    const trunks = new THREE.InstancedMesh(new THREE.CylinderGeometry(.9, 1.4, 11, 12).translate(0, 5.5, 0), mat(0x5a5647, { roughness: 1 }), treeCount);
     let treeIndex = 0;
     ISLANDS.forEach((island, idx) => {
       const group = new THREE.Group(); group.position.set(island.x, -5, island.z);
-      const segments = 32, rings = 8, vertices = [], indices = [];
+      const segments = 96, rings = 32, vertices = [], indices = [], colors = [];
+      const low = new THREE.Color(0x657b61), high = new THREE.Color(0x8a9189), color = new THREE.Color();
       for (let r = 0; r <= rings; r++) {
         const t = r / rings;
         for (let i = 0; i <= segments; i++) {
           const a = i / segments * Math.PI * 2;
           const noise = 1 + .10 * Math.sin(a * 5 + idx) + .08 * Math.cos(a * 3 - idx);
           const radius = t * island.r * noise;
-          const y = Math.pow(Math.max(0, 1 - t), 1.2) * island.h * (1 + Math.sin(a * 3 + t * 8) * .2);
+          const y = islandHeight(t, a, idx, island.h);
           vertices.push(Math.sin(a) * radius, y, Math.cos(a) * radius);
+          color.copy(low).lerp(high, Math.max(0, y / island.h - .22) * 1.25);
+          color.multiplyScalar(.95 + .05 * Math.sin(a * 9 + t * 22));
+          colors.push(color.r, color.g, color.b);
           if (r < rings && i < segments) { const v = r * (segments + 1) + i; indices.push(v, v + segments + 1, v + 1, v + 1, v + segments + 1, v + segments + 2); }
         }
       }
-      const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geom.setIndex(indices); geom.computeVertexNormals();
+      const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3)); geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3)); geom.setIndex(indices); geom.computeVertexNormals();
       group.add(new THREE.Mesh(geom, rockMat));
-      const beach = new THREE.Mesh(new THREE.CylinderGeometry(island.r * .92, island.r * 1.06, 5, 32), sandMat); beach.position.y = 3; group.add(beach);
+      const beach = new THREE.Mesh(new THREE.CylinderGeometry(island.r * .92, island.r * 1.06, 5, 96), sandMat); beach.position.y = 3; group.add(beach);
       this.scene.add(group);
-      for (let j = 0; j < 65; j++) {
-        const a = j * 2.399, t = .25 + ((j * 17) % 50) / 100;
+      for (let j = 0; j < 95; j++) {
+        const a = j * 2.399, t = .22 + ((j * 17) % 54) / 100;
         const radius = t * island.r * (1 + .10 * Math.sin(a * 5 + idx) + .08 * Math.cos(a * 3 - idx));
-        const y = Math.pow(1 - t, 1.2) * island.h * (1 + Math.sin(a * 3 + t * 8) * .2);
-        temp.position.set(island.x + Math.sin(a) * radius, y + 4, island.z + Math.cos(a) * radius); temp.scale.setScalar(.65 + (j % 5) * .16); temp.updateMatrix(); trees.setMatrixAt(treeIndex++, temp.matrix);
+        const y = islandHeight(t, a, idx, island.h);
+        temp.position.set(island.x + Math.sin(a) * radius, y - 5, island.z + Math.cos(a) * radius);
+        temp.rotation.y = j * .4; temp.scale.setScalar(.6 + (j % 5) * .12); temp.updateMatrix();
+        trees.setMatrixAt(treeIndex, temp.matrix); trunks.setMatrixAt(treeIndex, temp.matrix);
+        trees.setColorAt(treeIndex, new THREE.Color().setHSL(.36, .16 + (j % 3) * .025, .20 + (j % 4) * .025));
+        treeIndex++;
       }
     });
-    this.scene.add(trees);
+    this.scene.add(trees, trunks);
   }
   disposeObject(object) {
     object.traverse(o => {
       if (o.geometry) o.geometry.dispose();
-      if (o.material && !sharedMaterials.has(o.material)) o.material.dispose();
+      if (o.material && !sharedShipMaterials.has(o.material)) o.material.dispose();
     });
     this.scene.remove(object);
   }
@@ -196,6 +139,7 @@ export class World {
   syncShips(battle, dt) {
     for (const s of battle.ships) {
       const mesh = this.ships.get(s.id);
+      animateShip(mesh, this.time);
       mesh.position.set(s.x, Math.sin(this.time * 1.6 + s.id) * .55 - Math.min(18, s.deadTime * 2), s.z);
       mesh.rotation.set(Math.sin(this.time * .8 + s.id) * .012, s.heading, Math.sin(this.time + s.id) * .015 + (s.dead ? Math.min(.6, s.deadTime * .06) : 0));
       mesh.visible = s.deadTime < 12;
@@ -208,7 +152,7 @@ export class World {
     for (const p of battle.projectiles) {
       active.add(p.id);
       if (!this.shots.has(p.id)) {
-        const mesh = new THREE.Mesh(p.torpedo ? new THREE.CapsuleGeometry(.8, 5, 2, 5) : new THREE.SphereGeometry(1.1, 6, 4), new THREE.MeshBasicMaterial({ color: p.torpedo ? 0xcbe5e0 : 0xffd38b }));
+        const mesh = new THREE.Mesh(p.torpedo ? new THREE.CapsuleGeometry(.8, 5, 8, 16) : new THREE.SphereGeometry(1.1, 16, 12), new THREE.MeshBasicMaterial({ color: p.torpedo ? 0xcbe5e0 : 0xffd38b }));
         if (p.torpedo) mesh.rotation.x = Math.PI / 2;
         this.scene.add(mesh); this.shots.set(p.id, mesh);
       }
@@ -220,7 +164,7 @@ export class World {
   }
   effect(x, z, type = 'splash') {
     const smoke = type === 'smoke', fire = type === 'fire', large = type === 'explosion';
-    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1), new THREE.MeshBasicMaterial({ color: smoke ? 0x343b3d : fire || large ? 0xffbe66 : 0xb6d8db, transparent: true, opacity: smoke ? .28 : .8, depthWrite: false }));
+    const mesh = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 2), new THREE.MeshBasicMaterial({ color: smoke ? 0x343b3d : fire || large ? 0xffbe66 : 0xb6d8db, transparent: true, opacity: smoke ? .28 : .8, depthWrite: false }));
     mesh.position.set(x, smoke ? 20 : 3, z); this.scene.add(mesh); this.effects.push({ mesh, life: 0, duration: smoke ? 4 : large ? 1.5 : 1, smoke, fire, large });
     if (this.effects.length > 100) this.disposeObject(this.effects.shift().mesh);
   }
@@ -246,6 +190,7 @@ export class World {
       const desired = new THREE.Vector3(Math.sin(angle) * radius, compact ? 70 : 65, Math.cos(angle) * radius);
       this.camera.position.lerp(desired, Math.min(1, dt * 2));
       this.target.lerp(new THREE.Vector3(compact ? -15 : 10, 6, compact ? 12 : 0), Math.min(1, dt * 2));
+      animateShip(this.showroomShip, this.time);
       this.showroomShip.position.y = Math.sin(this.time * .9) * .6;
       this.showroomShip.rotation.z = Math.sin(this.time * .65) * .013;
     } else if (battle) {

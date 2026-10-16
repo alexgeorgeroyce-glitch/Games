@@ -11,16 +11,16 @@ npm ci --cache /tmp/iron-tide-npm
 npm run dev -- --port 5173
 ```
 
-Open the dev server in your browser, select a difficulty, then choose **TO BATTLE**. No account, API keys, backend, or downloaded art assets are needed. Fonts are bundled with the application. Sound is optional; enable it using the speaker button in the harbor.
+Open the dev server in your browser, select a difficulty, then choose **TO BATTLE**. No account, API keys, backend, or downloaded art assets are needed. Fonts are bundled with the application. Sound starts after your first interaction. The mix includes ocean surf, wind, speed-responsive engine and propeller noise, spatial cannon fire, torpedo launches, shell splashes, impacts, repairs, reloads, and victory/defeat cues. Use the speaker button to mute or unmute; choose **AUDIO** in the harbor or **Audio settings** in the pause menu to set the master volume. Volume and mute preferences persist on this browser.
 
 ```sh
 npm run build       # Build the standalone site in dist/
 npm run preview     # Serve the production build
-npm test            # 16 combat, AI, objective and progression tests
+npm test            # 21 combat, progression, geometry and audio-preference tests
 npm run test:browser # Chromium gameplay and responsive UI checks
 ```
 
-For browser checks, use an installed Chromium at `/usr/bin/chromium`, set `CHROMIUM_PATH`, or install Playwright's Chromium with `npx playwright install chromium`. `test:browser` starts its own server on port 4173; set `TEST_BASE_URL` to test an existing server. Screenshots go to the ignored `artifacts/` directory.
+For browser checks, use an installed Chromium at `/usr/bin/chromium`, set `CHROMIUM_PATH`, or install Playwright's Chromium with `npx playwright install chromium`. `test:browser` starts its own server on port 4173; set `TEST_BASE_URL` to test an existing development server. Screenshots go to the ignored `artifacts/` directory.
 
 ## How to play
 
@@ -58,11 +58,13 @@ Credits, researched vessels, your equipped ship, and the service record persist 
 ## Project structure
 
 - `src/simulation.js` — rendering-independent movement, AI, ballistics, torpedoes, repairs, damage, and objectives.
-- `src/world.js` — Three.js ocean shader, sky, procedural islands and ship models, follow camera, and combat effects.
+- `src/world.js` — Three.js ocean shader, sky, detailed island terrain and instanced trees, follow camera, and combat effects.
+- `src/ships.js` — curved hulls, rounded turrets, portholes, rails, lifeboats, deck equipment, and animated flags. Models have approximately 83,000–91,000 triangles each; static fittings are combined by material to limit draw calls.
+- `src/audio.js` — original Web Audio ambience and effects, distance attenuation and stereo panning, speed-responsive engines, and persistent master volume/mute controls.
 - `src/data.js` — ship definitions, progression, rewards, and profile storage.
 - `src/app.js` — harbor, controls, combat HUD, tech tree, audio, and after-action reports.
 - `src/style.css` — responsive harbor and battle interfaces.
-- `tests/` — simulation and browser integration checks.
+- `tests/` — simulation, geometry, audio-preference and browser integration checks. The browser suite also renders 11 effects through OfflineAudioContext to verify non-silent, unclipped waveforms, tests the live analyser for audible/muted output, and checks engine/pause audio behavior.
 
 The artwork, fictional fleet, ocean shader, and game interface are original. This is an arcade naval combat prototype inspired by the genre, with single-player AI battles; it does not include multiplayer or a detailed armor-penetration simulation.
 

@@ -2,6 +2,7 @@ import './style.css';
 import { SHIPS, ISLANDS, readProfile, unlockShip, rewardFor } from './data.js';
 import { Battle, clamp, distance } from './simulation.js';
 import { World } from './world.js';
+import { NavalAudio } from './audio.js';
 
 const icons = {
  anchor: '<circle cx="12" cy="5" r="2"/><path d="M12 7v14m-5-10h10M4 14a8 8 0 0 0 16 0M1 16l3-3 3 3m10 0 3-3 3 3"/>',
@@ -35,7 +36,8 @@ try { world = new World(document.querySelector('#scene')); } catch (error) {
   throw error;
 }
 let profile = readProfile(), selected = profile.selected, difficulty = 'standard', battle = null, paused = false, modal = null;
-let sound = false, audio = null, last = performance.now(), uiTime = 0, lastHit = 0, reward = 0, rightDrag = false, dragX = 0, dragY = 0;
+const audio = new NavalAudio();
+let last = performance.now(), uiTime = 0, lastHit = 0, reward = 0, rightDrag = false, dragX = 0, dragY = 0;
 const keys = new Set();
 let sessionLog = [], notificationTimer, pointerPosition = null;
 const save = () => { try { localStorage.setItem('iron-tide-profile-v1', JSON.stringify(profile)); } catch { toast('Progress cannot be saved in this browser session.'); } };
@@ -44,26 +46,26 @@ function toast(text) {
   const el = document.createElement('div'); el.id = 'toast'; el.setAttribute('role', 'status'); el.innerHTML = `${icon('info')}<span></span>`; el.querySelector('span').textContent = text; document.body.appendChild(el);
   clearTimeout(notificationTimer); notificationTimer = setTimeout(() => el.remove(), 3600);
 }
-function playSound(type) {
-  if (!sound) return;
-  try {
-    audio ||= new (window.AudioContext || window.webkitAudioContext)(); audio.resume();
-    const now = audio.currentTime, duration = type === 'fire' ? .48 : type === 'sunk' ? 1 : .18;
-    const buffer = audio.createBuffer(1, audio.sampleRate * duration, audio.sampleRate), data = buffer.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2);
-    const source = audio.createBufferSource(); source.buffer = buffer;
-    const filter = audio.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = type === 'hit' ? 800 : 220;
-    const gain = audio.createGain(); gain.gain.setValueAtTime(type === 'fire' ? .32 : .22, now); gain.gain.exponentialRampToValueAtTime(.001, now + duration);
-    source.connect(filter).connect(gain).connect(audio.destination); source.start();
-  } catch { sound = false; }
+function playSound(type, position) { audio.play(type, position, battle?.player); }
+function soundButton(className = 'icon-button') {
+  return `<button class="${className} sound-toggle" data-action="sound" aria-label="${audio.enabled ? 'Mute' : 'Enable'} sound" aria-pressed="${audio.enabled}">${icon(audio.enabled ? 'volume' : 'mute')}${className === 'secondary-button' ? '<span data-sound-label>' + (audio.enabled ? 'Mute sound' : 'Enable sound') + '</span>' : ''}</button>`;
+}
+function refreshAudioButtons() {
+  for (const button of document.querySelectorAll('[data-action="sound"]')) {
+    button.setAttribute('aria-label', `${audio.enabled ? 'Mute' : 'Enable'} sound`);
+    button.setAttribute('aria-pressed', String(audio.enabled));
+    button.querySelector('svg').outerHTML = icon(audio.enabled ? 'volume' : 'mute');
+    const label = button.querySelector('[data-sound-label]');
+    if (label) label.textContent = audio.enabled ? 'Mute sound' : 'Enable sound';
+  }
 }
 function header() {
-  return `<header class="topbar"><a class="brand" href="#" data-action="harbor" aria-label="Iron Tide harbor"><span class="brand-symbol">${icon('anchor')}</span><span>IRON TIDE<small>NAVAL COMMAND</small></span></a><nav aria-label="Main navigation"><button class="nav-link active" data-action="harbor">HARBOR</button><button class="nav-link" data-action="fleet">FLEET <span>04</span></button><button class="nav-link" data-action="research">RESEARCH</button></nav><div class="topbar-right"><span class="credits">${icon('bolt')} <b>${profile.credits.toLocaleString()}</b><small>CR</small></span><span class="divider"></span><button class="icon-button" data-action="sound" aria-label="${sound ? 'Mute' : 'Enable'} sound">${icon(sound ? 'volume' : 'mute')}</button><button class="captain" data-action="profile"><span>R</span><span>ROOKIE<small>FLEET COMMANDER</small></span></button></div></header>`;
+  return `<header class="topbar"><a class="brand" href="#" data-action="harbor" aria-label="Iron Tide harbor"><span class="brand-symbol">${icon('anchor')}</span><span>IRON TIDE<small>NAVAL COMMAND</small></span></a><nav aria-label="Main navigation"><button class="nav-link active" data-action="harbor">HARBOR</button><button class="nav-link" data-action="fleet">FLEET <span>04</span></button><button class="nav-link" data-action="research">RESEARCH</button></nav><div class="topbar-right"><span class="credits">${icon('bolt')} <b>${profile.credits.toLocaleString()}</b><small>CR</small></span><span class="divider"></span>${soundButton()}<button class="captain" data-action="profile"><span>R</span><span>ROOKIE<small>FLEET COMMANDER</small></span></button></div></header>`;
 }
 function harbor() {
   const s = SHIPS.find(s => s.id === selected), idx = SHIPS.indexOf(s);
   root.className = 'harbor-ui';
-  root.innerHTML = `${header()}<main class="harbor-main"><div class="location"><span class="live-dot"></span> NORTH ATLANTIC <span class="location-line"></span> 06:40 LOCAL <span class="weather">${icon('waves')} SEA STATE 2</span></div><section class="ship-info"><div class="eyebrow"><span class="tiny-flag">✦</span> THE AURELIAN FLEET <span class="rank-tag">RANK ${s.rank}</span></div><p class="ship-prefix">${s.prefix} / ${s.year}</p><h1>${s.name}<span>.</span></h1><p class="ship-role">${s.role}</p><p class="ship-description">${s.description}</p><div class="ship-stats">${[['shield', 'SURVIVABILITY', s.hull.toLocaleString(), 'HP', s.hull / 4300], ['bolt', 'MAX SPEED', s.speed, 'KNOTS', s.speed / 40], ['target', 'MAIN BATTERY', s.guns + ' × ' + s.caliber, '', s.damage / 750]].map(([i, label, val, unit, pct]) => `<div class="stat"><div>${icon(i)}<span>${label}</span><b>${val} <small>${unit}</small></b></div><div class="stat-track"><i style="width:${pct * 100}%"></i></div></div>`).join('')}</div><button class="text-button" data-action="details">VESSEL SPECIFICATIONS ${icon('arrow')}</button></section><div class="ship-view-label"><span class="view-cross">+</span><span>${s.prefix} ${s.name.toUpperCase()}<small>${s.role.toUpperCase()} · ${s.guns} GUNS · ${s.torpedoes} TORPEDOES</small></span><span class="view-line"></span></div><aside class="operation-card"><div class="operation-top"><span class="eyebrow">YOUR NEXT DEPLOYMENT</span><span class="pulse-dot"></span></div><div class="mission-map"><div class="map-grid"></div><svg viewBox="0 0 300 160" aria-hidden="true"><path d="m0 15 65-15 16 35-23 24 17 23-31 28L0 102Zm300-5-67 9-19 26 19 25-13 20 33 16 47-15ZM300 160l-68-7-18-24 29-14 57 13ZM0 160l69-7 13-22-21-13L0 123Z" fill="#30474b"/><circle cx="150" cy="77" r="30" fill="none" stroke="#c5a56b" stroke-dasharray="3 5"/><path d="m150 64 12 13-12 13-12-13Z" fill="none" stroke="#e2bd7d"/><text x="150" y="81" text-anchor="middle" fill="#e2bd7d" font-size="11" font-family="monospace">A</text><path d="m95 126 4-10 4 10Zm49 5 4-10 4 10Z" fill="#76bcb8"/><path d="m185 25 4 10 4-10Zm-52 2 4 10 4-10Z" fill="#c97e73"/></svg><span class="map-coordinate">57°42′ N · 12°18′ W</span><span class="map-tag">01 / 01</span></div><div class="operation-body"><div class="eyebrow gold">DOMINATION <span>5 MIN</span></div><h2>Operation<br>Breakwater</h2><p>Hostile ships are closing in. Secure the channel. Leave nothing afloat.</p><div class="mission-facts"><span>${icon('compass')} Shattered Isles</span><span>${icon('ship')} Solo + AI fleet</span></div><label class="difficulty-label" for="difficulty">COMBAT DIFFICULTY</label><select id="difficulty"><option value="cadet" ${difficulty === 'cadet' ? 'selected' : ''}>Cadet · forgiving waters</option><option value="standard" ${difficulty === 'standard' ? 'selected' : ''}>Standard · balanced combat</option><option value="veteran" ${difficulty === 'veteran' ? 'selected' : ''}>Veteran · hostile seas</option></select><button class="deploy-button" data-action="deploy">${icon('target')} <span>TO BATTLE</span> ${icon('arrow')}</button><small class="deploy-note">NO MATCHMAKING. STRAIGHT INTO ACTION.</small></div></aside><section class="fleet-strip" aria-label="Select your vessel"><div class="fleet-strip-title"><span>YOUR FLEET <b>0${profile.unlocked.length}<small> / 04</small></b></span><button class="text-button" data-action="research">EXPLORE THE TECH TREE ${icon('arrow')}</button></div><div class="ship-cards">${SHIPS.map((ship, i) => { const unlocked = profile.unlocked.includes(ship.id); return `<button class="ship-card ${selected === ship.id ? 'selected' : ''} ${unlocked ? '' : 'locked'}" data-action="select" data-id="${ship.id}" aria-label="${unlocked ? 'Select' : 'Research'} ${ship.name}"><div class="card-top"><span>${unlocked ? 'RANK ' + ship.rank : icon('lock') + ' RANK ' + ship.rank}</span>${selected === ship.id ? '<span class="in-service">IN SERVICE</span>' : unlocked ? '<span>AVAILABLE</span>' : `<span>${ship.cost.toLocaleString()} CR</span>`}</div>${silhouette(i)}<div class="card-bottom"><strong>${ship.name}</strong><span>${ship.role}</span>${selected === ship.id ? icon('check') : icon(unlocked ? 'chevron' : 'lock')}</div></button>`; }).join('')}</div></section></main><footer class="harbor-footer"><span><i class="live-dot"></i> ALL SYSTEMS OPERATIONAL <span class="footer-dot">·</span> ORIGINAL NAVAL COMBAT</span><button data-action="help">${icon('info')} HOW TO PLAY <kbd>?</kbd></button><span class="version">BUILD 1.0 <span class="footer-dot">/</span> OPEN WATERS AWAIT</span></footer>`;
+  root.innerHTML = `${header()}<main class="harbor-main"><div class="location"><span class="live-dot"></span> NORTH ATLANTIC <span class="location-line"></span> 06:40 LOCAL <span class="weather">${icon('waves')} SEA STATE 2</span></div><section class="ship-info"><div class="eyebrow"><span class="tiny-flag">✦</span> THE AURELIAN FLEET <span class="rank-tag">RANK ${s.rank}</span></div><p class="ship-prefix">${s.prefix} / ${s.year}</p><h1>${s.name}<span>.</span></h1><p class="ship-role">${s.role}</p><p class="ship-description">${s.description}</p><div class="ship-stats">${[['shield', 'SURVIVABILITY', s.hull.toLocaleString(), 'HP', s.hull / 4300], ['bolt', 'MAX SPEED', s.speed, 'KNOTS', s.speed / 40], ['target', 'MAIN BATTERY', s.guns + ' × ' + s.caliber, '', s.damage / 750]].map(([i, label, val, unit, pct]) => `<div class="stat"><div>${icon(i)}<span>${label}</span><b>${val} <small>${unit}</small></b></div><div class="stat-track"><i style="width:${pct * 100}%"></i></div></div>`).join('')}</div><button class="text-button" data-action="details">VESSEL SPECIFICATIONS ${icon('arrow')}</button></section><div class="ship-view-label"><span class="view-cross">+</span><span>${s.prefix} ${s.name.toUpperCase()}<small>${s.role.toUpperCase()} · ${s.guns} GUNS · ${s.torpedoes} TORPEDOES</small></span><span class="view-line"></span></div><aside class="operation-card"><div class="operation-top"><span class="eyebrow">YOUR NEXT DEPLOYMENT</span><span class="pulse-dot"></span></div><div class="mission-map"><div class="map-grid"></div><svg viewBox="0 0 300 160" aria-hidden="true"><path d="m0 15 65-15 16 35-23 24 17 23-31 28L0 102Zm300-5-67 9-19 26 19 25-13 20 33 16 47-15ZM300 160l-68-7-18-24 29-14 57 13ZM0 160l69-7 13-22-21-13L0 123Z" fill="#30474b"/><circle cx="150" cy="77" r="30" fill="none" stroke="#c5a56b" stroke-dasharray="3 5"/><path d="m150 64 12 13-12 13-12-13Z" fill="none" stroke="#e2bd7d"/><text x="150" y="81" text-anchor="middle" fill="#e2bd7d" font-size="11" font-family="monospace">A</text><path d="m95 126 4-10 4 10Zm49 5 4-10 4 10Z" fill="#76bcb8"/><path d="m185 25 4 10 4-10Zm-52 2 4 10 4-10Z" fill="#c97e73"/></svg><span class="map-coordinate">57°42′ N · 12°18′ W</span><span class="map-tag">01 / 01</span></div><div class="operation-body"><div class="eyebrow gold">DOMINATION <span>5 MIN</span></div><h2>Operation<br>Breakwater</h2><p>Hostile ships are closing in. Secure the channel. Leave nothing afloat.</p><div class="mission-facts"><span>${icon('compass')} Shattered Isles</span><span>${icon('ship')} Solo + AI fleet</span></div><label class="difficulty-label" for="difficulty">COMBAT DIFFICULTY</label><select id="difficulty"><option value="cadet" ${difficulty === 'cadet' ? 'selected' : ''}>Cadet · forgiving waters</option><option value="standard" ${difficulty === 'standard' ? 'selected' : ''}>Standard · balanced combat</option><option value="veteran" ${difficulty === 'veteran' ? 'selected' : ''}>Veteran · hostile seas</option></select><button class="deploy-button" data-action="deploy">${icon('target')} <span>TO BATTLE</span> ${icon('arrow')}</button><small class="deploy-note">NO MATCHMAKING. STRAIGHT INTO ACTION.</small></div></aside><section class="fleet-strip" aria-label="Select your vessel"><div class="fleet-strip-title"><span>YOUR FLEET <b>0${profile.unlocked.length}<small> / 04</small></b></span><button class="text-button" data-action="research">EXPLORE THE TECH TREE ${icon('arrow')}</button></div><div class="ship-cards">${SHIPS.map((ship, i) => { const unlocked = profile.unlocked.includes(ship.id); return `<button class="ship-card ${selected === ship.id ? 'selected' : ''} ${unlocked ? '' : 'locked'}" data-action="select" data-id="${ship.id}" aria-label="${unlocked ? 'Select' : 'Research'} ${ship.name}"><div class="card-top"><span>${unlocked ? 'RANK ' + ship.rank : icon('lock') + ' RANK ' + ship.rank}</span>${selected === ship.id ? '<span class="in-service">IN SERVICE</span>' : unlocked ? '<span>AVAILABLE</span>' : `<span>${ship.cost.toLocaleString()} CR</span>`}</div>${silhouette(i)}<div class="card-bottom"><strong>${ship.name}</strong><span>${ship.role}</span>${selected === ship.id ? icon('check') : icon(unlocked ? 'chevron' : 'lock')}</div></button>`; }).join('')}</div></section></main><footer class="harbor-footer"><span><i class="live-dot"></i> ALL SYSTEMS OPERATIONAL <span class="footer-dot">·</span> ORIGINAL NAVAL COMBAT</span><button data-action="audio">${icon('volume')} AUDIO</button><button data-action="help">${icon('info')} HOW TO PLAY <kbd>?</kbd></button><span class="version">BUILD 1.0 <span class="footer-dot">/</span> OPEN WATERS AWAIT</span></footer>`;
   document.querySelector('#difficulty').addEventListener('change', e => difficulty = e.target.value);
 }
 function openModal(type) {
@@ -81,16 +83,23 @@ function openModal(type) {
   } else if (type === 'details') {
     title = `ITS ${s.name}`; eyebrow = `VESSEL DOSSIER / RANK ${s.rank}`;
     content = `${silhouette(SHIPS.indexOf(s), 'dossier-ship')}<p class="modal-intro">${s.description}</p><div class="dossier-grid">${[['CLASS', s.role], ['COMMISSIONED', s.year], ['HULL INTEGRITY', s.hull + ' HP'], ['TOP SPEED', s.speed + ' knots'], ['MAIN BATTERY', s.guns + ' × ' + s.caliber], ['SALVO RELOAD', s.reload + ' seconds'], ['TORPEDOES', s.torpedoes || 'None'], ['REPAIR PARTIES', '2 × 36% hull']].map(([a, b]) => `<div><small>${a}</small><b>${b}</b></div>`).join('')}</div>`;
+  } else if (type === 'audio') {
+    title = 'Sound of the sea.'; eyebrow = 'AUDIO / MASTER MIX';
+    content = `<p class="modal-intro">Hear the surf, the engines beneath your feet, and the fleet across the water.</p><div class="audio-settings"><div class="audio-settings-heading">${icon('waves')}<span>OCEAN & COMBAT AUDIO</span>${soundButton('secondary-button')}</div><label class="volume-label" for="master-volume">MASTER VOLUME <output id="volume-value">${Math.round(audio.volume * 100)}%</output></label><input id="master-volume" aria-label="Master volume" type="range" min="0" max="100" step="1" value="${Math.round(audio.volume * 100)}"><div class="audio-layers"><span>OCEAN & WIND</span><span>ENGINE & PROPELLER</span><span>CANNONS & TORPEDOES</span><span>IMPACTS & REPAIRS</span></div></div><p class="audio-note">Sound starts after your first interaction. Your volume and mute settings are remembered on this browser.</p>`;
   } else if (type === 'profile') {
     title = 'Your service record.'; eyebrow = 'FLEET COMMANDER / ROOKIE';
     content = `<p class="modal-intro">Every sortie leaves a mark. Your record is stored locally in this browser.</p><div class="record-grid">${[['SORTIES', profile.battles], ['VICTORIES', profile.victories], ['BEST KILLS', profile.bestKills], ['VESSELS', profile.unlocked.length + ' / 4']].map(([a, b]) => `<div><strong>${b}</strong><small>${a}</small></div>`).join('')}</div>`;
   } else if (type === 'pause') {
     title = 'Holding position.'; eyebrow = 'BATTLE PAUSED';
-    content = `<p class="modal-intro">Your fleet is standing by. Resume the operation when you’re ready.</p><div class="pause-actions"><button class="deploy-button" data-action="close">RESUME BATTLE ${icon('arrow')}</button><button class="secondary-button" data-action="help">CONTROLS & FIELD MANUAL ${icon('info')}</button><button class="secondary-button danger" data-action="abandon">ABANDON SORTIE</button></div>`;
+    content = `<p class="modal-intro">Your fleet is standing by. Resume the operation when you’re ready.</p><div class="pause-actions"><button class="deploy-button" data-action="close">RESUME BATTLE ${icon('arrow')}</button><button class="secondary-button" data-action="help">CONTROLS & FIELD MANUAL ${icon('info')}</button><button class="secondary-button" data-action="audio">AUDIO SETTINGS ${icon('volume')}</button><button class="secondary-button danger" data-action="abandon">ABANDON SORTIE</button></div>`;
   }
   const layer = document.createElement('div'); layer.className = `modal-layer ${type === 'research' || type === 'fleet' ? 'wide' : ''}`;
   layer.innerHTML = `<section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><button class="modal-close icon-button" data-action="close" aria-label="Close dialog">${icon('close')}</button><div class="eyebrow gold">${eyebrow}</div><h2 id="modal-title">${title}</h2>${content}</section>`;
   root.appendChild(layer); layer.querySelector('button:not([disabled])')?.focus();
+  layer.querySelector('#master-volume')?.addEventListener('input', e => {
+    audio.setVolume(Number(e.target.value) / 100);
+    document.querySelector('#volume-value').textContent = `${e.target.value}%`;
+  });
 }
 function closeModal() {
   document.querySelector('.modal-layer')?.remove(); modal = null; paused = false; keys.clear();
@@ -104,7 +113,7 @@ function selectShip(id) {
 function startBattle() {
   closeModal(); clearInputs(); battle = new Battle(selected, difficulty); sessionLog = []; reward = 0;
   world.startBattle(battle); paused = false; root.className = 'battle-ui';
-  root.innerHTML = `<div class="battle-top"><div class="battle-brand">${icon('anchor')}<span>IRON TIDE<small>OPERATION BREAKWATER</small></span></div><div class="battle-score"><div class="team-score"><span>AURELIAN FLEET</span><div><i id="friendly-score"></i></div></div><div class="objective-icon">A</div><div class="team-score enemy"><span>HOSTILE FLEET</span><div><i id="enemy-score"></i></div></div><div id="battle-timer">05:00</div></div><button class="icon-button pause-button" data-action="pause" aria-label="Pause battle">${icon('pause')}<kbd>ESC</kbd></button></div><div class="battle-objective"><span class="live-dot"></span><span id="objective-text">CAPTURE A OR ELIMINATE THE HOSTILE FLEET</span></div><div class="compass"><span>SW</span><i></i><span>W</span><i></i><span>NW</span><b id="heading">180°</b><span>N</span><i></i><span>NE</span><i></i><span>E</span></div><div id="ship-labels"></div><div id="hit-indicator"></div><div id="battle-feed"></div><div class="aim-readout"><span id="aim-distance">— M</span><span>MAIN BATTERY</span></div><div class="battle-bottom"><section class="vessel-hud"><div class="vessel-hud-title">${icon('ship')}<span>ITS ${SHIPS.find(s => s.id === selected).name.toUpperCase()}<small id="hull-number"></small></span><b id="speed-number">0<small>KNOTS</small></b></div><div class="hull-track"><i id="hull-bar"></i></div><div class="throttle-display"><span>ENGINE <b id="throttle-label">STOP</b></span><span id="repair-label">HULL INTEGRITY</span></div><div class="throttle-track"><i id="throttle-bar"></i></div><div class="helm-hint"><kbd>W</kbd><kbd>S</kbd> ENGINE <span></span><kbd>A</kbd><kbd>D</kbd> RUDDER</div></section><section class="weapons-hud"><button class="weapon selected" data-action="fire" aria-label="Fire main battery"><kbd>SPACE / LMB</kbd>${icon('gun')}<b>MAIN BATTERY</b><span id="gun-status">READY</span><i id="gun-reload"></i></button><button class="weapon" data-action="torpedo" aria-label="Launch torpedo"><kbd>Q</kbd>${icon('target')}<b>TORPEDO</b><span id="torpedo-status">READY</span><i id="torpedo-reload"></i></button><button class="weapon" data-action="repair" aria-label="Repair ship"><kbd>R</kbd>${icon('wrench')}<b>REPAIR PARTY</b><span id="repair-status">2 CHARGES</span><i id="repair-reload"></i></button></section><section class="minimap-wrap"><div><span>SHATTERED ISLES</span><span id="battle-kills">0 SUNK</span></div><canvas id="minimap" width="220" height="190" aria-label="Tactical map showing ships, islands and objective A"></canvas><span class="minimap-scale">N ↑ <span>2 KM</span></span></section></div><div class="battle-tip" id="battle-tip"><kbd>W</kbd> GET UNDERWAY <span>·</span> MOUSE TO AIM <span>·</span> CLICK TO FIRE</div><div class="damage-vignette"></div>`;
+  root.innerHTML = `<div class="battle-top"><div class="battle-brand">${icon('anchor')}<span>IRON TIDE<small>OPERATION BREAKWATER</small></span></div><div class="battle-score"><div class="team-score"><span>AURELIAN FLEET</span><div><i id="friendly-score"></i></div></div><div class="objective-icon">A</div><div class="team-score enemy"><span>HOSTILE FLEET</span><div><i id="enemy-score"></i></div></div><div id="battle-timer">05:00</div></div><div class="battle-toolbar">${soundButton()}<button class="icon-button pause-button" data-action="pause" aria-label="Pause battle">${icon('pause')}<kbd>ESC</kbd></button></div></div><div class="battle-objective"><span class="live-dot"></span><span id="objective-text">CAPTURE A OR ELIMINATE THE HOSTILE FLEET</span></div><div class="compass"><span>SW</span><i></i><span>W</span><i></i><span>NW</span><b id="heading">180°</b><span>N</span><i></i><span>NE</span><i></i><span>E</span></div><div id="ship-labels"></div><div id="hit-indicator"></div><div id="battle-feed"></div><div class="aim-readout"><span id="aim-distance">— M</span><span>MAIN BATTERY</span></div><div class="battle-bottom"><section class="vessel-hud"><div class="vessel-hud-title">${icon('ship')}<span>ITS ${SHIPS.find(s => s.id === selected).name.toUpperCase()}<small id="hull-number"></small></span><b id="speed-number">0<small>KNOTS</small></b></div><div class="hull-track"><i id="hull-bar"></i></div><div class="throttle-display"><span>ENGINE <b id="throttle-label">STOP</b></span><span id="repair-label">HULL INTEGRITY</span></div><div class="throttle-track"><i id="throttle-bar"></i></div><div class="helm-hint"><kbd>W</kbd><kbd>S</kbd> ENGINE <span></span><kbd>A</kbd><kbd>D</kbd> RUDDER</div></section><section class="weapons-hud"><button class="weapon selected" data-action="fire" aria-label="Fire main battery"><kbd>SPACE / LMB</kbd>${icon('gun')}<b>MAIN BATTERY</b><span id="gun-status">READY</span><i id="gun-reload"></i></button><button class="weapon" data-action="torpedo" aria-label="Launch torpedo"><kbd>Q</kbd>${icon('target')}<b>TORPEDO</b><span id="torpedo-status">READY</span><i id="torpedo-reload"></i></button><button class="weapon" data-action="repair" aria-label="Repair ship"><kbd>R</kbd>${icon('wrench')}<b>REPAIR PARTY</b><span id="repair-status">2 CHARGES</span><i id="repair-reload"></i></button></section><section class="minimap-wrap"><div><span>SHATTERED ISLES</span><span id="battle-kills">0 SUNK</span></div><canvas id="minimap" width="220" height="190" aria-label="Tactical map showing ships, islands and objective A"></canvas><span class="minimap-scale">N ↑ <span>2 KM</span></span></section></div><div class="battle-tip" id="battle-tip"><kbd>W</kbd> GET UNDERWAY <span>·</span> MOUSE TO AIM <span>·</span> CLICK TO FIRE</div><div class="damage-vignette"></div>`;
   toast('Operation underway. Capture A or sink every hostile ship.');
   const helm = document.createElement('div'); helm.className = 'touch-helm';
   helm.innerHTML = '<button data-key="KeyW" aria-label="Increase throttle">W ↑</button><button data-key="KeyA" aria-label="Turn port">← A</button><button data-key="KeyS" aria-label="Decrease throttle">S ↓</button><button data-key="KeyD" aria-label="Turn starboard">D →</button>';
@@ -113,30 +122,32 @@ function startBattle() {
     control.addEventListener('pointerdown', e => { e.preventDefault(); if (paused || battle.result) return; control.setPointerCapture(e.pointerId); keys.add(control.dataset.key); });
     for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) control.addEventListener(event, () => keys.delete(control.dataset.key));
   }
+  audio.update(battle); playSound('horn');
   last = performance.now(); updateHUD();
 }
 function processEvents() {
   for (const event of battle.events.splice(0)) {
     if (event.type === 'fire') {
       world.effect(event.ship.x, event.ship.z, 'fire');
-      if (event.ship.role === 'player') playSound('fire');
+      playSound(event.torpedo ? 'torpedo' : 'fire', event.ship);
     }
-    if (event.type === 'splash') world.effect(event.x, event.z, event.large ? 'explosion' : 'splash');
+    if (event.type === 'splash') { world.effect(event.x, event.z, event.large ? 'explosion' : 'splash'); playSound('splash', event); }
     if (event.type === 'hit') {
-      if (event.playerHit) { lastHit = performance.now(); document.querySelector('#hit-indicator').innerHTML = `${icon('target')}<b>HIT <span>+${event.damage}</span></b>`; playSound('hit'); }
-      if (event.ship.role === 'player') { document.querySelector('.damage-vignette').classList.remove('flash'); void document.querySelector('.damage-vignette').offsetWidth; document.querySelector('.damage-vignette').classList.add('flash'); playSound('hit'); }
+      if (event.playerHit) { lastHit = performance.now(); document.querySelector('#hit-indicator').innerHTML = `${icon('target')}<b>HIT <span>+${event.damage}</span></b>`; playSound('hit', event.ship); }
+      if (event.ship.role === 'player') { document.querySelector('.damage-vignette').classList.remove('flash'); void document.querySelector('.damage-vignette').offsetWidth; document.querySelector('.damage-vignette').classList.add('flash'); playSound('hit', event.ship); }
     }
     if (event.type === 'sunk') {
-      world.effect(event.ship.x, event.ship.z, 'explosion'); playSound('sunk');
+      world.effect(event.ship.x, event.ship.z, 'explosion'); playSound('sunk', event.ship);
       sessionLog.unshift({ text: `${event.ship.name} ${event.ship.team === 1 ? 'destroyed' : 'lost'}`, enemy: event.ship.team === 1 });
       document.querySelector('#battle-feed').innerHTML = sessionLog.slice(0, 4).map(e => `<div class="${e.enemy ? 'enemy-sunk' : ''}">${icon('target')} ${e.text}</div>`).join('');
     }
-    if (event.type === 'collision') toast('Shallow water. Reverse engines and steer clear of the island.');
-    if (event.type === 'repair') toast('Repair party deployed. Restoring hull over 8 seconds.');
+    if (event.type === 'collision') { playSound('collision'); toast('Shallow water. Reverse engines and steer clear of the island.'); }
+    if (event.type === 'repair') { playSound('repair'); toast('Repair party deployed. Restoring hull over 8 seconds.'); }
     if (event.type === 'end') endBattle(event.result);
   }
 }
 function endBattle(result) {
+  playSound(result);
   clearInputs(); reward = rewardFor(result, battle.kills, battle.damage, battle.capSeconds);
   profile.credits += reward; profile.battles++; if (result === 'victory') profile.victories++; profile.bestKills = Math.max(profile.bestKills, battle.kills); save();
   const layer = document.createElement('div'); layer.className = 'modal-layer result-layer';
@@ -204,12 +215,13 @@ function updateHUD() {
   if (cap.visible) labels.push(`<div class="cap-label" style="left:${cap.x}px;top:${cap.y}px"><b>A</b><small>${Math.round(Math.hypot(p.x, p.z))} M</small></div>`);
   document.querySelector('#ship-labels').innerHTML = labels.join(''); drawMap();
 }
-root.addEventListener('click', e => {
+root.addEventListener('click', async e => {
   const button = e.target.closest('[data-action]'); if (!button || button.disabled) return;
   e.preventDefault(); const action = button.dataset.action, id = button.dataset.id;
-  if (action === 'sound') { sound = !sound; if (sound) playSound('hit'); if (!battle) harbor(); }
+  await audio.unlock();
+  if (action === 'sound') { audio.setEnabled(!audio.enabled); refreshAudioButtons(); }
   else if (action === 'harbor') { if (!battle) { closeModal(); harbor(); } }
-  else if (['help', 'fleet', 'research', 'details', 'profile', 'pause'].includes(action)) openModal(action);
+  else if (['help', 'fleet', 'research', 'details', 'profile', 'pause', 'audio'].includes(action)) openModal(action);
   else if (action === 'close') closeModal();
   else if (action === 'select' || action === 'equip') selectShip(id);
   else if (action === 'unlock') { if (unlockShip(profile, id)) { save(); toast(`${SHIPS.find(s => s.id === id).name} has joined your fleet.`); openModal('research'); } }
@@ -232,7 +244,7 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => keys.delete(e.code));
 window.addEventListener('blur', () => { clearInputs(); if (battle && !battle.result && !paused) openModal('pause'); });
-document.addEventListener('visibilitychange', () => { if (document.hidden && battle && !battle.result && !paused) openModal('pause'); });
+document.addEventListener('visibilitychange', () => { audio.setHidden(document.hidden); if (document.hidden && battle && !battle.result && !paused) openModal('pause'); });
 window.addEventListener('pointermove', e => {
   if (!battle || paused || battle.result) return;
   if (rightDrag) { world.orbit -= (e.clientX - dragX) * .005; world.elevation = clamp(world.elevation + (e.clientY - dragY) * .003, .1, 1.25); dragX = e.clientX; dragY = e.clientY; }
@@ -249,7 +261,7 @@ window.addEventListener('wheel', e => { if (battle && !paused && !modal && !e.ta
 // Keep keyboard navigation within the active dialog.
 window.addEventListener('keydown', e => {
   if (e.code !== 'Tab' || !modal) return;
-  const dialog = document.querySelector('.modal-layer:last-child'), buttons = [...dialog?.querySelectorAll('button:not([disabled]), select, a[href]') || []];
+  const dialog = document.querySelector('.modal-layer:last-child'), buttons = [...dialog?.querySelectorAll('button:not([disabled]), input:not([disabled]), select, a[href]') || []];
   if (!buttons.length) return;
   const first = buttons[0], lastButton = buttons.at(-1);
   if (e.shiftKey && document.activeElement === first) { e.preventDefault(); lastButton.focus(); }
@@ -269,8 +281,8 @@ function frame(now) {
   }
   world.update(dt, battle, paused);
   if (pointerPosition && battle && !paused && !rightDrag && !battle.result) world.aimAt(pointerPosition.x, pointerPosition.y, battle);
-  uiTime += dt; if (uiTime > .075 && battle) { updateHUD(); uiTime = 0; }
+  uiTime += dt; if (uiTime > .075) { if (battle) updateHUD(); audio.update(battle, paused); uiTime = 0; }
 }
 requestAnimationFrame(frame);
 // Development diagnostics used by the browser smoke checks.
-window.ironTide = { get battle() { return battle; }, get profile() { return structuredClone(profile); }, get paused() { return paused; }, get world() { return world; } };
+window.ironTide = { get battle() { return battle; }, get profile() { return structuredClone(profile); }, get paused() { return paused; }, get world() { return world; }, get audio() { return audio; } };
